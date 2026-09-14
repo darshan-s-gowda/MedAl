@@ -1,56 +1,54 @@
 # ═══════════════════════════════════════════════════════════════
-# MedAI — CI/CD Pipeline (GitHub Actions)
-# Workflow: Test → Build Docker → Push to AWS ECR → Deploy to EC2
-# ═══════════════════════════════════════════════════════════════
+# MedAI — Continuous Integration (GitHub Actions)
+# Workflow: Lint → Test → Coverage
 #
-# Required GitHub Secrets:
-#   AWS_ACCESS_KEY_ID       - IAM user key with ECR + EC2 access
-#   AWS_SECRET_ACCESS_KEY   - IAM secret key
-#   AWS_REGION              - e.g. us-east-1
-#   ECR_REPOSITORY          - e.g. medai-app
-#   EC2_HOST                - EC2 public IP or DNS
-#   EC2_SSH_KEY             - Private SSH key for EC2 instance
-#   EC2_USER                - e.g. ec2-user or ubuntu
-#   ENV_FILE_CONTENT        - Full .env file contents (base64 encoded)
+# Deployment is handled automatically by Render when changes
+# are pushed to the main branch.
+# ═══════════════════════════════════════════════════════════════
 
-name: MedAI CI/CD
+name: MedAI CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
-
-env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+    branches: [main]
 
 jobs:
 
-  # ─── Job 1: Lint & Test ───────────────────────────────────────
+  # ─── Job 1: Lint & Test ──────────────────────────────────────
   test:
-    name: Run Tests
+    name: Lint & Run Tests
     runs-on: ubuntu-latest
+
     steps:
+
+      # ─── Checkout ────────────────────────────────────────────
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # ─── Python ──────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
+      # ─── Dependencies ────────────────────────────────────────
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest pytest-cov flake8
 
+      # ─── Code Quality ────────────────────────────────────────
       - name: Lint with flake8
         run: |
-          flake8 src/ app.py --max-line-length=120 --ignore=E402,W503,F401,E302,E303,W293,E123,E127,W292,E305,E241,E231
+          flake8 src/ app.py \
+            --max-line-length=120 \
+            --ignore=E402,W503,W504,W291,F401,E302,E303,W293,E123,E127,W292,E305,E241,E231
 
+      # ─── Unit Tests ──────────────────────────────────────────
       - name: Run unit tests
         run: |
           pytest tests/ -v --cov=src --cov-report=xml --tb=short
@@ -59,117 +57,9 @@ jobs:
           FLASK_SECRET_KEY: "test-secret"
           LLM_PROVIDER: "mock"
 
+      # ─── Coverage ────────────────────────────────────────────
       - name: Upload coverage report
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
-
-  # ─── Job 2: Build & Push Docker Image to ECR ─────────────────
-  build-and-push:
-    name: Build Docker & Push to ECR
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    outputs:
-      image-uri: ${{ steps.build-push.outputs.image-uri }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag, and push Docker image to ECR
-        id: build-push
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          LATEST_URI="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-
-          docker build -t $IMAGE_URI -t $LATEST_URI .
-          docker push $IMAGE_URI
-          docker push $LATEST_URI
-
-          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-          echo "✅ Pushed image: $IMAGE_URI"
-
-  # ─── Job 3: Deploy to EC2 ─────────────────────────────────────
-  deploy:
-    name: Deploy to AWS EC2
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_URI: ${{ needs.build-and-push.outputs.image-uri }}
-          ENV_FILE: ${{ secrets.ENV_FILE_CONTENT }}
-          AWS_REGION: ${{ env.AWS_REGION }}
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          timeout: 120s
-          envs: ECR_REGISTRY,IMAGE_URI,ENV_FILE,AWS_REGION
-          script: |
-            set -e
-
-            echo "🔐 Logging into ECR..."
-            aws ecr get-login-password --region $AWS_REGION | \
-              docker login --username AWS --password-stdin $ECR_REGISTRY
-
-            echo "📦 Pulling latest image..."
-            docker pull $IMAGE_URI
-
-            echo "⚙️ Writing environment file..."
-            echo "$ENV_FILE" | base64 -d > /home/$USER/medai.env
-
-            echo "🛑 Stopping old container..."
-            docker stop medai-app 2>/dev/null || true
-            docker rm medai-app 2>/dev/null || true
-
-            echo "🚀 Starting new container..."
-            docker run -d \
-              --name medai-app \
-              --restart unless-stopped \
-              -p 5000:5000 \
-              --env-file /home/$USER/medai.env \
-              -v medai_models:/app/models \
-              -v medai_logs:/app/logs \
-              -v medai_data:/app/data \
-              $IMAGE_URI
-
-            echo "✅ Health check..."
-            sleep 15
-            curl -f http://localhost:5000/health || (echo "❌ Health check failed!" && exit 1)
-
-            echo "🧹 Cleaning up old images..."
-            docker image prune -f
-
-            echo "✅ Deployment successful!"
