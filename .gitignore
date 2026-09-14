@@ -1,0 +1,43 @@
+# Environment & Secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Models (large files - use DVC or S3 in production)
+models/*.pkl
+models/*.pth
+models/*.h5
+
+# Data
+data/
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+*.sqlite3

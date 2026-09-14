@@ -1,0 +1,46 @@
+version: "3.9"
+
+# ═══════════════════════════════════════════════
+# MedAI — Docker Compose (Local Development)
+# ═══════════════════════════════════════════════
+#
+# Usage:
+#   docker-compose up --build      # First run
+#   docker-compose up              # Subsequent runs
+#   docker-compose down            # Stop
+#   docker-compose logs -f medai   # View logs
+
+services:
+  medai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: medai-app
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      - FLASK_ENV=development
+      - PORT=5000
+    volumes:
+      # Persist models and logs across restarts
+      - medai_models:/app/models
+      - medai_logs:/app/logs
+      - medai_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  medai_models:
+    driver: local
+  medai_logs:
+    driver: local
+  medai_data:
+    driver: local
