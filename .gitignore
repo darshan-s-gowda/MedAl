@@ -20,8 +20,6 @@ htmlcov/
 coverage.xml
 
 # Models (large files - use DVC or S3 in production)
-models/*.pkl
-models/*.pth
 models/*.h5
 
 # Data
@@ -41,3 +39,4 @@ logs/
 Thumbs.db
 
 *.sqlite3
+data/medical_book.pdf
