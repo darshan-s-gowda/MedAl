@@ -1,12 +1,11 @@
 # ═══════════════════════════════════════════════════════════════
 # MedAI — Dockerfile
-# Multi-stage build for production-ready container
+# Production container for Render deployment
 # ═══════════════════════════════════════════════════════════════
 
-# ─── Stage 1: Builder (installs dependencies) ───
+# ─── Stage 1: Builder ───
 FROM python:3.11-slim AS builder
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -14,66 +13,74 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /install
 
-# Install system deps for building packages
+# Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python requirements
+# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --prefix=/runtime --no-cache-dir -r requirements.txt
 
-# ─── Stage 2: Final Runtime Image ───
+RUN pip install \
+    --prefix=/runtime \
+    --no-cache-dir \
+    -r requirements.txt
+
+
+# ─── Stage 2: Runtime ───
 FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=5000 \
     FLASK_ENV=production \
     LOG_LEVEL=INFO
 
-# Install only runtime system libraries
+# Runtime libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
-RUN groupadd -r medai && useradd -r -g medai medai
+# Create non-root user
+RUN groupadd -r medai && \
+    useradd -r -g medai medai
 
 WORKDIR /app
 
-# Copy installed packages from builder
+# Copy installed Python packages
 COPY --from=builder /runtime /usr/local
 
-# Copy application source
+# Copy application
 COPY --chown=medai:medai . .
 
-# Create required directories
-RUN mkdir -p logs models data && chown -R medai:medai /app
+# Required directories
+RUN mkdir -p logs models data && \
+    chown -R medai:medai /app
 
-# Switch to non-root user
+# Run as non-root user
 USER medai
 
-# Expose application port
-EXPOSE 5000
+# Render supplies the actual PORT at runtime.
+# This is only documentation for the container.
+EXPOSE 10000
 
-# Health check for container orchestration
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -f http://localhost:5000/health || exit 1
+# Container health check
+# Uses the PORT supplied by Render, falling back to 10000.
+HEALTHCHECK --interval=30s \
+    --timeout=10s \
+    --start-period=120s \
+    --retries=3 \
+    CMD sh -c 'curl -f http://localhost:${PORT:-10000}/health || exit 1'
 
 # ─── Startup ───
-# Generate PDF + train ML models on first boot, then start Gunicorn
-CMD ["sh", "-c", "\
-  python src/pipelines/generate_medical_pdf.py && \
-  python -c 'from src.ml.predictor import DiseasePredictor; DiseasePredictor()' && \
-  gunicorn --bind 0.0.0.0:$PORT \
-           --workers 2 \
-           --worker-class sync \
-           --timeout 120 \
-           --keep-alive 5 \
-           --access-logfile logs/access.log \
-           --error-logfile logs/error.log \
-           --log-level info \
-           app:app"]
+# IMPORTANT:
+# - Do not generate the medical PDF here.
+# - Do not initialize ML models here.
+# - Do not use 2 Gunicorn workers on the 512 MB Render instance.
+# - Start Gunicorn immediately so Render can detect the HTTP port.
+#
+# Render provides $PORT automatically.
+# If PORT is unavailable, 10000 is used as fallback.
+
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-10000} --workers 1 --worker-class sync --timeout 120 --keep-alive 5 --access-logfile - --error-logfile - --log-level info app:app"]
